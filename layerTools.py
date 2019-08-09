@@ -29,13 +29,22 @@ def summer(tensorList):
     summed_horiz = keras.backend.sum(filtered, axis=2)
     return summed_horiz
 
-def generate_gc_model(num_nodes=29, atom_hidden_length=6, bond_hidden_length=4, hide_atoms=False,\
-                      message_dense_resize=None, atom_dense_resize=None, bond_dense_resize=None, do_readout = False):
+def generate_gc_atom_layer(num_nodes=29, atom_hidden_length=5, bond_hidden_length=3, hide_atoms=False,\
+                      message_dense_resize=None, atom_dense_resize=None,
+                      nonlinear_state_update = False,layer_number=None):
+                          
+    if layer_number is None:
+        layer_number = "_1"
+    else:
+        layer_number = "_"+str(layer_number)
+        
     # Generates a graph convolution model based on the provided parameters.
-    
-    bond_hiddens_input = keras.layers.Input(shape=(num_nodes,num_nodes,bond_hidden_length))
-    atom_hiddens_input = keras.layers.Input(shape=(num_nodes,atom_hidden_length))
-    connectivity_input = keras.layers.Input(shape=(num_nodes,num_nodes))
+    bond_hiddens_input = keras.layers.Input(shape=(num_nodes,num_nodes,bond_hidden_length),
+    name="bond_input" +layer_number)
+    atom_hiddens_input = keras.layers.Input(shape=(num_nodes,atom_hidden_length),
+    name="atom_input" +layer_number)
+    connectivity_input = keras.layers.Input(shape=(num_nodes,num_nodes),
+    name="connectivity_input" +layer_number)
     
     # For JP's task
     if hide_atoms:
@@ -43,37 +52,40 @@ def generate_gc_model(num_nodes=29, atom_hidden_length=6, bond_hidden_length=4, 
     else:
         atom_hiddens = atom_hiddens_input
     
-    message_stack = keras.layers.Lambda(stacker)([bond_hiddens_input, atom_hiddens])
+    message_stack = keras.layers.Lambda(stacker, name="stacker" +layer_number)([bond_hiddens_input, atom_hiddens])
     
     # Should we dense the total hidden vector?
     if message_dense_resize != None:
-        messages = keras.layers.Dense(message_dense_resize, activation='relu')(message_stack)
+        messages = keras.layers.Dense(message_dense_resize, activation='relu',
+        name="message_dense" +layer_number)(message_stack)
     else:
         messages = message_stack
     
-    message_sum = keras.layers.Lambda(summer)([messages, connectivity_input])
+    message_sum = keras.layers.Lambda(summer,
+    name="message_sum" +layer_number)([messages, connectivity_input])
     
     # Should we dense the atom hidden vector?
     if atom_dense_resize != None:
-        message_interpret = keras.layers.Dense(atom_dense_resize, activation='relu')(message_sum)
+        message_interpret = keras.layers.Dense(atom_dense_resize, activation='relu',
+        name="interpret_dense" +layer_number)(message_sum)
     else:
         message_interpret = message_sum
-    
-    message_to_onehot = keras.layers.Dense(atom_hidden_length, activation='softmax')(message_interpret)
-    
-    if do_readout:
-        message_to_readout__ = keras.layers.Lambda(lambda x: K.sum(x, axis=1))(message_to_onehot)
-        message_to_readout_ = keras.layers.Dense(30)(message_to_readout__)
-        message_to_readout = keras.layers.Dense(1, activation='sigmoid')(message_to_readout_)
-        model = keras.models.Model(inputs=[bond_hiddens_input, atom_hiddens_input, connectivity_input], outputs=message_to_readout)
-        return model
+        
+    combined_message_state = keras.layers.Concatenate(axis=2, name="combine_message" +layer_number)([atom_hiddens_input, message_interpret])
+    print('combined shape is ' +str(combined_message_state.shape))
+
+
+    if  nonlinear_state_update:
+        message_to_out = keras.layers.Dense(atom_hidden_length, activation='relu',name="nonlinear_combine" +layer_number)(combined_message_state)
+
     else:
-        if bond_dense_resize == None:
-            connectivity_output = keras.layers.Lambda(lambda x: K.identity(x))(connectivity_input)
-            bond_hiddens_output = keras.layers.Lambda(lambda x: K.identity(x))(bond_hiddens_input)
-        else:
-            bond_hiddens_output_ = keras.layers.Dense(bond_dense_resize)(messages)
-            bond_hiddens_output = keras.layers.Dense(bond_hidden_length,activation='softmax')(bond_hiddens_output_)
-            connectivity_output = keras.layers.Lambda(lambda x: K.sum(x[:,:,:,1:], axis=3))(bond_hiddens_output)
-        model = keras.models.Model(inputs=[bond_hiddens_input, atom_hiddens_input, connectivity_input], outputs=[bond_hiddens_output, message_to_onehot, connectivity_output])
-        return model
+        message_to_out = keras.layers.Dense(atom_hidden_length, activation='linear',name="linear_combine" +layer_number)(combined_message_state)
+    print('bond_hiddens_input shape is ' +str(bond_hiddens_input.shape))
+    print('atom_hiddens_input shape is ' +str(atom_hiddens_input.shape))
+    print('connectivity_input shape is ' +str(connectivity_input.shape))
+    print('message_to_out shape is ' +str(message_to_out.shape))
+    
+    model = keras.models.Model(inputs=[bond_hiddens_input, atom_hiddens_input, connectivity_input], outputs=[message_to_out])
+    return model
+    
+    
